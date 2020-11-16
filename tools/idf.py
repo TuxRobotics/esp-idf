@@ -144,7 +144,6 @@ def init_cli(verbose_output=None):
 
     class Deprecation(object):
         """Construct deprecation notice for help messages"""
-
         def __init__(self, deprecated=False):
             self.deprecated = deprecated
             self.since = None
@@ -204,7 +203,7 @@ def init_cli(verbose_output=None):
             self.action_args = action_args
             self.aliases = aliases
 
-        def run(self, context, global_args, action_args=None):
+        def __call__(self, context, global_args, action_args=None):
             if action_args is None:
                 action_args = self.action_args
 
@@ -292,7 +291,6 @@ def init_cli(verbose_output=None):
 
         names - alias of 'param_decls'
         """
-
         def __init__(self, **kwargs):
             names = kwargs.pop("names")
             super(Argument, self).__init__(names, **kwargs)
@@ -331,7 +329,6 @@ def init_cli(verbose_output=None):
 
     class Option(click.Option):
         """Option that knows whether it should be global"""
-
         def __init__(self, scope=None, deprecated=False, hidden=False, **kwargs):
             """
             Keyword arguments additional to Click's Option class:
@@ -355,6 +352,9 @@ def init_cli(verbose_output=None):
                 deprecation = Deprecation(deprecated)
                 self.help = deprecation.help(self.help)
 
+            if self.envvar:
+                self.help += " The default value can be set with the %s environment variable." % self.envvar
+
             if self.scope.is_global:
                 self.help += " This option can be used at most once either globally, or for one subcommand."
 
@@ -367,7 +367,6 @@ def init_cli(verbose_output=None):
 
     class CLI(click.MultiCommand):
         """Action list contains all actions with options available for CLI"""
-
         def __init__(self, all_actions=None, verbose_output=None, help=None):
             super(CLI, self).__init__(
                 chain=True,
@@ -451,7 +450,7 @@ def init_cli(verbose_output=None):
         def _print_closing_message(self, args, actions):
             # print a closing message of some kind
             #
-            if "flash" in str(actions):
+            if "flash" in str(actions) or "dfu" in str(actions):
                 print("Done")
                 return
 
@@ -462,8 +461,6 @@ def init_cli(verbose_output=None):
             # Otherwise, if we built any binaries print a message about
             # how to flash them
             def print_flashing_message(title, key):
-                print("\n%s build complete. To flash, run this command:" % title)
-
                 with open(os.path.join(args.build_dir, "flasher_args.json")) as f:
                     flasher_args = json.load(f)
 
@@ -471,6 +468,10 @@ def init_cli(verbose_output=None):
                     return _safe_relpath(os.path.join(args.build_dir, f))
 
                 if key != "project":  # flashing a single item
+                    if key not in flasher_args:
+                        # This is the case for 'idf.py bootloader' if Secure Boot is on, need to follow manual flashing steps
+                        print("\n%s build complete." % title)
+                        return
                     cmd = ""
                     if (key == "bootloader"):  # bootloader needs --flash-mode, etc to be passed in
                         cmd = " ".join(flasher_args["write_flash_args"]) + " "
@@ -485,6 +486,8 @@ def init_cli(verbose_output=None):
                     )
                     for o, f in flash_items:
                         cmd += o + " " + flasher_path(f) + " "
+
+                print("\n%s build complete. To flash, run this command:" % title)
 
                 print(
                     "%s %s -p %s -b %s --before %s --after %s --chip %s %s write_flash %s" % (
@@ -518,6 +521,10 @@ def init_cli(verbose_output=None):
             ctx = click.get_current_context()
             global_args = PropertyDict(kwargs)
 
+            def _help_and_exit():
+                print(ctx.get_help())
+                ctx.exit()
+
             # Show warning if some tasks are present several times in the list
             dupplicated_tasks = sorted(
                 [item for item, count in Counter(task.name for task in tasks).items() if count > 1])
@@ -528,9 +535,13 @@ def init_cli(verbose_output=None):
                     ("s %s are" % dupes if len(dupplicated_tasks) > 1 else " %s is" % dupes) +
                     "Only first occurence will be executed.")
 
-            # Set propagated global options.
-            # These options may be set on one subcommand, but available in the list of global arguments
             for task in tasks:
+                # Show help and exit if help is in the list of commands
+                if task.name == 'help':
+                    _help_and_exit()
+
+                # Set propagated global options.
+                # These options may be set on one subcommand, but available in the list of global arguments
                 for key in list(task.action_args):
                     option = next((o for o in ctx.command.params if o.name == key), None)
 
@@ -558,8 +569,7 @@ def init_cli(verbose_output=None):
 
             # Always show help when command is not provided
             if not tasks:
-                print(ctx.get_help())
-                ctx.exit()
+                _help_and_exit()
 
             # Build full list of tasks to and deal with dependencies and order dependencies
             tasks_to_run = OrderedDict()
@@ -615,7 +625,7 @@ def init_cli(verbose_output=None):
                         name_with_aliases += " (aliases: %s)" % ", ".join(task.aliases)
 
                     print("Executing action: %s" % name_with_aliases)
-                    task.run(ctx, global_args, task.action_args)
+                    task(ctx, global_args, task.action_args)
 
                 self._print_closing_message(global_args, tasks_to_run.keys())
 
@@ -639,10 +649,15 @@ def init_cli(verbose_output=None):
     all_actions = {}
     # Load extensions from components dir
     idf_py_extensions_path = os.path.join(os.environ["IDF_PATH"], "tools", "idf_py_actions")
-    extra_paths = os.environ.get("IDF_EXTRA_ACTIONS_PATH", "").split(';')
-    extension_dirs = [idf_py_extensions_path] + extra_paths
-    extensions = {}
+    extension_dirs = [realpath(idf_py_extensions_path)]
+    extra_paths = os.environ.get("IDF_EXTRA_ACTIONS_PATH")
+    if extra_paths is not None:
+        for path in extra_paths.split(';'):
+            path = realpath(path)
+            if path not in extension_dirs:
+                extension_dirs.append(path)
 
+    extensions = {}
     for directory in extension_dirs:
         if directory and not os.path.exists(directory):
             print('WARNING: Directroy with idf.py extensions doesn\'t exist:\n    %s' % directory)

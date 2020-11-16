@@ -182,6 +182,7 @@ uint64_t IRAM_ATTR esp_timer_impl_get_time(void)
     uint64_t time_base;
     uint32_t ticks_per_us;
     bool overflow;
+    int max_retries = 10;
 
     do {
         /* Read all values needed to calculate current time */
@@ -202,7 +203,8 @@ uint64_t IRAM_ATTR esp_timer_impl_get_time(void)
         }
 
         /* If any value has changed (other than the counter increasing), read again */
-    } while(true);
+        max_retries--;
+    } while(max_retries > 0);
 
     uint64_t result = time_base
                         + timer_val / ticks_per_us;
@@ -212,6 +214,7 @@ uint64_t IRAM_ATTR esp_timer_impl_get_time(void)
 void IRAM_ATTR esp_timer_impl_set_alarm(uint64_t timestamp)
 {
     portENTER_CRITICAL_SAFE(&s_time_update_lock);
+    int max_retries = 10;
     // Use calculated alarm value if it is less than ALARM_OVERFLOW_VAL.
     // Note that if by the time we update ALARM_REG, COUNT_REG value is higher,
     // interrupt will not happen for another ALARM_OVERFLOW_VAL timer ticks,
@@ -252,7 +255,8 @@ void IRAM_ATTR esp_timer_impl_set_alarm(uint64_t timestamp)
         } else {
             break;
         }
-    } while (1);
+        max_retries--;
+    } while (max_retries > 0);
     portEXIT_CRITICAL_SAFE(&s_time_update_lock);
 }
 
